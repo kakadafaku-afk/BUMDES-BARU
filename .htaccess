@@ -1,0 +1,40 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Meneruskan HTTP Authorization header ke PHP FastCGI/CGI
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+  SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+
+  # 1. Routing API ke api/index.php
+  RewriteCond %{REQUEST_URI} ^/api(/.*)?$
+  RewriteRule ^api(/.*)?$ api/index.php [QSA,L]
+
+  # 2. File statis nyata (gambar, css, js) langsung dilayani Apache
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # 3. Semua rute halaman lainnya (React Router SPA) diarahkan ke spa.php agar judul & Open Graph dinamis per URL
+  RewriteRule ^ spa.php [L]
+</IfModule>
+
+# Keamanan & Header Cache
+<IfModule mod_headers.c>
+  Header set X-Content-Type-Options "nosniff"
+  Header set X-Frame-Options "SAMEORIGIN"
+  Header set X-XSS-Protection "1; mode=block"
+
+  # 1. Nonaktifkan cache untuk index.html agar browser HP selalu mengambil versi aplikasi paling baru
+  <FilesMatch "\.(html|htm)$">
+    Header set Cache-Control "no-cache, no-store, must-revalidate, max-age=0"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+  </FilesMatch>
+
+  # 2. Berikan cache panjang untuk file asset statis dengan nama ber-hash unik
+  <FilesMatch "\.(js|css|jpg|jpeg|png|gif|svg|ico|woff|woff2)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+</IfModule>
+

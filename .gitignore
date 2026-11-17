@@ -1,0 +1,14 @@
+# Konfigurasi sensitif (database & secret key)
+api/db.php
+.env
+.env.*
+
+# File log & sistem operasi
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
