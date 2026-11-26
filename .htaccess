@@ -32,9 +32,14 @@
     Header set Expires "0"
   </FilesMatch>
 
-  # 2. Berikan cache panjang untuk file asset statis dengan nama ber-hash unik
-  <FilesMatch "\.(js|css|jpg|jpeg|png|gif|svg|ico|woff|woff2)$">
+  # 2. Berikan cache panjang untuk file bundle ber-hash (JS/CSS/Font)
+  <FilesMatch "\.(js|css|woff|woff2)$">
     Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+
+  # 3. Cache gambar lebih singkat agar perubahan gambar segera terlihat setelah redeploy
+  <FilesMatch "\.(jpg|jpeg|png|gif|webp|svg|ico)$">
+    Header set Cache-Control "public, max-age=86400, must-revalidate"
   </FilesMatch>
 </IfModule>
 

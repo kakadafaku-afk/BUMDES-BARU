@@ -72,7 +72,9 @@ if (isset($routeMeta[$path])) {
     $desc = 'Artikel dan informasi kegiatan terbaru BUMDes Sedya Makmur Desa Mayong Lor, Jepara.';
 
     // Ambil judul, ringkasan, dan URL foto artikel secara aman tanpa gagal fatal bila DB sibuk
-    $dbConfig = __DIR__ . '/api/db.php';
+    $dbConfig = file_exists(__DIR__ . '/api/db.php')
+        ? (__DIR__ . '/api/db.php')
+        : (__DIR__ . '/api/db.example.php');
     if (file_exists($dbConfig)) {
         try {
             require_once $dbConfig;
@@ -98,8 +100,10 @@ if (isset($routeMeta[$path])) {
                         $desc = trim($row['ringkasan']);
                     }
                     $img = trim((string)($row['gambar'] ?? ''));
-                    if ($img !== '' && stripos($img, 'data:') !== 0) {
-                        if (preg_match('#^https?://#i', $img)) {
+                    if ($img !== '') {
+                        if (stripos($img, 'data:image/') === 0) {
+                            $ogImage = $baseUrl . '/api/media/berita/' . $beritaId;
+                        } elseif (preg_match('#^https?://#i', $img)) {
                             $ogImage = $img;
                         } elseif (strpos($img, '/') === 0) {
                             $ogImage = $baseUrl . $img;

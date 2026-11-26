@@ -1,14 +1,25 @@
 <?php
 // =======================================================
 // Template Konfigurasi Database MySQL & Secret Key
-// Salin file ini menjadi api/db.php lalu isi kredensial Anda
+// - Untuk hosting berbasis container (RuPa Cloud / Docker):
+//   cukup isi Environment Variables (DB_HOST, DB_NAME, DB_USER, DB_PASS, JWT_SECRET)
+// - Untuk XAMPP / Shared Hosting (Hostinger / cPanel):
+//   salin file ini menjadi api/db.php lalu isi kredensial Anda
 // =======================================================
 
-$DB_HOST = "localhost";
-$DB_NAME = "nama_database";
-$DB_USER = "username_db";
-$DB_PASS = "password_db";
-$JWT_SECRET = "ganti-dengan-secret-key-acak-yang-panjang";
+$readEnvConfig = function ($key, $default) {
+    $val = getenv($key);
+    if ($val !== false && $val !== '') return $val;
+    if (isset($_ENV[$key]) && $_ENV[$key] !== '') return $_ENV[$key];
+    if (isset($_SERVER[$key]) && $_SERVER[$key] !== '') return $_SERVER[$key];
+    return $default;
+};
+
+$DB_HOST = $readEnvConfig('DB_HOST', 'localhost');
+$DB_NAME = $readEnvConfig('DB_NAME', 'nama_database');
+$DB_USER = $readEnvConfig('DB_USER', 'username_db');
+$DB_PASS = $readEnvConfig('DB_PASS', 'password_db');
+$JWT_SECRET = $readEnvConfig('JWT_SECRET', 'ganti-dengan-secret-key-acak-yang-panjang');
 
 function getDb() {
     global $DB_HOST, $DB_NAME, $DB_USER, $DB_PASS;
@@ -217,7 +228,9 @@ function initDatabase($pdo) {
         alamat_kantor VARCHAR(255) DEFAULT 'Kompleks Balaidesa Mayong Lor, Kec. Mayong, Kab. Jepara',
         jam_pelayanan VARCHAR(100) DEFAULT 'Senin–Sabtu, 08.00–16.00 WIB',
         no_telepon VARCHAR(50) DEFAULT '0878 2124 4536',
-        email_desa VARCHAR(100) DEFAULT 'bumdesmayonglor@gmail.com'
+        email_desa VARCHAR(100) DEFAULT 'bumdesmayonglor@gmail.com',
+        foto_hero LONGTEXT DEFAULT NULL,
+        foto_unit_wisata LONGTEXT DEFAULT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     // 3. Statistik
@@ -237,7 +250,7 @@ function initDatabase($pdo) {
         tanggal VARCHAR(50) NOT NULL,
         ringkasan TEXT NOT NULL,
         isi LONGTEXT,
-        gambar VARCHAR(255) DEFAULT NULL,
+        gambar LONGTEXT DEFAULT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 

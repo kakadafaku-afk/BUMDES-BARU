@@ -17,7 +17,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-require_once __DIR__ . "/db.php";
+$dbConfigFile = file_exists(__DIR__ . "/db.php") ? (__DIR__ . "/db.php") : (__DIR__ . "/db.example.php");
+require_once $dbConfigFile;
 require_once __DIR__ . "/auth.php";
 
 $pdo = getDb();
@@ -1025,11 +1026,52 @@ try {
     }
 
     // ----------------------------------------------------
-    // 10. UPLOAD FOTO PRODUK (PNG / JPG / JPEG, MAKS 2 MB)
+    // 10. MEDIA STREAMING DARI DATABASE (UNTUK PREVIEW OG/WA)
+    // ----------------------------------------------------
+    if ($resource === "media" && $method === "GET" && $subResource === "berita" && isset($segments[2])) {
+        $beritaId = (int)$segments[2];
+        $stmt = $pdo->prepare("SELECT gambar FROM berita WHERE id = ? LIMIT 1");
+        $stmt->execute([$beritaId]);
+        $row = $stmt->fetch();
+        $img = trim((string)($row['gambar'] ?? ''));
+
+        if (preg_match('/^data:(image\/(?:png|jpe?g|webp|gif));base64,(.+)$/i', $img, $m)) {
+            $mime = strtolower($m[1]);
+            if ($mime === 'image/jpg') $mime = 'image/jpeg';
+            $bytes = base64_decode($m[2], true);
+            if ($bytes !== false && strlen($bytes) > 0) {
+                header("Content-Type: " . $mime);
+                header("Content-Length: " . strlen($bytes));
+                header("Cache-Control: public, max-age=86400, must-revalidate");
+                echo $bytes;
+                exit;
+            }
+        } elseif ($img !== '' && strpos($img, '/uploads/') === 0) {
+            $localPath = realpath(dirname(__DIR__) . $img);
+            $uploadsRoot = realpath(dirname(__DIR__) . '/uploads');
+            if ($localPath && $uploadsRoot && strpos($localPath, $uploadsRoot) === 0 && is_file($localPath)) {
+                $info = @getimagesize($localPath);
+                $mime = $info['mime'] ?? 'image/jpeg';
+                header("Content-Type: " . $mime);
+                header("Content-Length: " . filesize($localPath));
+                header("Cache-Control: public, max-age=86400, must-revalidate");
+                readfile($localPath);
+                exit;
+            }
+        }
+
+        http_response_code(404);
+        echo json_encode(["error" => "Media berita tidak ditemukan."]);
+        exit;
+    }
+
+    // ----------------------------------------------------
+    // 11. UPLOAD FOTO TERKOMPRESI (DISIMPAN KE DATABASE AGAR KEBAL REDEPLOY)
     // ----------------------------------------------------
     if ($resource === "upload" && $method === "POST") {
         requireAuth();
         $maxBytes = 2 * 1024 * 1024; // 2 MB = 2,097,152 bytes
+        $allowedMimes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
 
         // A. Jika dikirim via multipart/form-data ($_FILES)
         $fileEntry = $_FILES['foto'] ?? $_FILES['file'] ?? null;
@@ -1047,56 +1089,45 @@ try {
             }
 
             $imgInfo = @getimagesize($fileEntry['tmp_name']);
-            $mime = $imgInfo ? ($imgInfo['mime'] ?? '') : '';
-            if (!in_array($mime, ['image/png', 'image/jpeg', 'image/jpg'], true)) {
+            $mime = $imgInfo ? strtolower($imgInfo['mime'] ?? '') : '';
+            if (!in_array($mime, $allowedMimes, true)) {
                 http_response_code(400);
-                echo json_encode(["error" => "Format foto harus PNG atau JPG/JPEG."]);
+                echo json_encode(["error" => "Format foto harus PNG, JPG/JPEG, atau WebP."]);
                 exit;
             }
-
-            $ext = ($mime === 'image/png') ? 'png' : 'jpg';
-            $uploadDir = dirname(__DIR__) . '/uploads/produk';
-            if (!is_dir($uploadDir)) {
-                @mkdir($uploadDir, 0755, true);
-            }
-            $fileName = 'produk_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-            $targetPath = $uploadDir . '/' . $fileName;
-
-            if (@move_uploaded_file($fileEntry['tmp_name'], $targetPath)) {
-                echo json_encode([
-                    "url" => "/uploads/produk/" . $fileName,
-                    "size" => $fileSize,
-                    "mime" => $mime,
-                    "message" => "Foto produk berhasil diunggah."
-                ]);
-                exit;
-            }
+            if ($mime === 'image/jpg') $mime = 'image/jpeg';
 
             $rawBytes = file_get_contents($fileEntry['tmp_name']);
+            if ($rawBytes === false) {
+                http_response_code(500);
+                echo json_encode(["error" => "Gagal membaca file foto."]);
+                exit;
+            }
+
             echo json_encode([
                 "url" => "data:" . $mime . ";base64," . base64_encode($rawBytes),
                 "size" => $fileSize,
                 "mime" => $mime,
-                "message" => "Foto produk berhasil diproses."
+                "storage" => "database",
+                "message" => "Foto berhasil diproses untuk disimpan ke database."
             ]);
             exit;
         }
 
-        // B. Jika dikirim via JSON body (dataUrl base64)
+        // B. Jika dikirim via JSON body (dataUrl base64 terkompresi dari browser)
         $dataUrl = isset($body['dataUrl']) ? trim((string)$body['dataUrl']) : '';
         if (!$dataUrl) {
             http_response_code(400);
-            echo json_encode(["error" => "Data foto tidak ditemukan. Pilih foto PNG atau JPG maksimal 2 MB."]);
+            echo json_encode(["error" => "Data foto tidak ditemukan. Pilih foto PNG, JPG, atau WebP maksimal 2 MB."]);
             exit;
         }
 
-        if (!preg_match('/^data:image\/(png|jpe?g);base64,(.+)$/i', $dataUrl, $matches)) {
+        if (!preg_match('/^data:image\/(png|jpe?g|webp);base64,(.+)$/i', $dataUrl, $matches)) {
             http_response_code(400);
-            echo json_encode(["error" => "Format foto tidak didukung. Gunakan format PNG atau JPG/JPEG."]);
+            echo json_encode(["error" => "Format foto tidak didukung. Gunakan format PNG, JPG/JPEG, atau WebP."]);
             exit;
         }
 
-        $formatType = strtolower($matches[1]);
         $base64Data = $matches[2];
         $decodedBytes = base64_decode($base64Data, true);
         if ($decodedBytes === false) {
@@ -1113,37 +1144,21 @@ try {
         }
 
         $imgInfo = @getimagesizefromstring($decodedBytes);
-        $mime = $imgInfo ? ($imgInfo['mime'] ?? '') : '';
-        if (!in_array($mime, ['image/png', 'image/jpeg', 'image/jpg'], true)) {
+        $mime = $imgInfo ? strtolower($imgInfo['mime'] ?? '') : '';
+        if (!in_array($mime, $allowedMimes, true)) {
             http_response_code(400);
-            echo json_encode(["error" => "File yang dipilih bukan gambar PNG atau JPG yang valid."]);
+            echo json_encode(["error" => "File yang dipilih bukan gambar PNG, JPG, atau WebP yang valid."]);
             exit;
         }
+        if ($mime === 'image/jpg') $mime = 'image/jpeg';
 
-        $ext = ($mime === 'image/png') ? 'png' : 'jpg';
-        $uploadDir = dirname(__DIR__) . '/uploads/produk';
-        if (!is_dir($uploadDir)) {
-            @mkdir($uploadDir, 0755, true);
-        }
-        $fileName = 'produk_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        $targetPath = $uploadDir . '/' . $fileName;
-
-        if (@file_put_contents($targetPath, $decodedBytes) !== false) {
-            echo json_encode([
-                "url" => "/uploads/produk/" . $fileName,
-                "size" => $byteLength,
-                "mime" => $mime,
-                "message" => "Foto produk berhasil diunggah."
-            ]);
-            exit;
-        }
-
-        // Fallback ke Data URL jika direktori lokal read-only
+        // Kembalikan Data URL terkompresi agar tersimpan permanen di kolom LONGTEXT database (kebal redeploy)
         echo json_encode([
             "url" => "data:" . $mime . ";base64," . base64_encode($decodedBytes),
             "size" => $byteLength,
             "mime" => $mime,
-            "message" => "Foto produk berhasil disimpan."
+            "storage" => "database",
+            "message" => "Foto berhasil diproses untuk disimpan ke database."
         ]);
         exit;
     }
