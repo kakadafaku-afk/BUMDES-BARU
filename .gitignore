@@ -1,5 +1,7 @@
 # Konfigurasi sensitif (database & secret key)
 api/db.php
+api/env.vault.php
+api/env.vault.php.tmp*
 .env
 .env.*
 

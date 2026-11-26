@@ -7,26 +7,95 @@
 //   salin file ini menjadi api/db.php lalu isi kredensial Anda
 // =======================================================
 
+$vaultFile = __DIR__ . '/env.vault.php';
 $dotEnvVars = [];
+if (@is_file($vaultFile)) {
+    $loadedVault = @include $vaultFile;
+    if (is_array($loadedVault)) {
+        $dotEnvVars = $loadedVault;
+    }
+}
+
+// Baca .env lalu pindahkan variabel sensitif ke env.vault.php (tertutup 403) agar .env di webroot bersih dari password
+$safePublicEnvKeys = ['APP_ENV', 'PORT', 'HOST', 'NODE_ENV', 'TZ'];
 foreach ([dirname(__DIR__) . '/.env', __DIR__ . '/.env'] as $envPath) {
-    if (@is_file($envPath) && @is_readable($envPath)) {
-        $envLines = @file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        if (is_array($envLines)) {
-            foreach ($envLines as $envLine) {
-                $trimmed = trim($envLine);
-                if ($trimmed === '' || $trimmed[0] === '#') continue;
-                if (strpos($trimmed, 'export ') === 0) {
-                    $trimmed = trim(substr($trimmed, 7));
+    if (@is_file($envPath)) {
+        $rawLines = @file($envPath, FILE_IGNORE_NEW_LINES);
+        if (is_array($rawLines)) {
+            $fileVars = [];
+            $safeLines = [];
+            $hasSensitiveLines = false;
+
+            foreach ($rawLines as $rawLine) {
+                $trimmed = trim($rawLine);
+                if ($trimmed === '') {
+                    $safeLines[] = '';
+                    continue;
                 }
-                $eqPos = strpos($trimmed, '=');
-                if ($eqPos === false) continue;
-                $k = trim(substr($trimmed, 0, $eqPos));
-                $v = trim(substr($trimmed, $eqPos + 1));
+                if ($trimmed[0] === '#') {
+                    // Jangan sisakan komentar yang menyebut database di .env publik
+                    if (stripos($trimmed, 'database') === false && stripos($trimmed, 'mysql') === false && stripos($trimmed, 'password') === false) {
+                        $safeLines[] = $rawLine;
+                    }
+                    continue;
+                }
+                $cleanLine = (strpos($trimmed, 'export ') === 0) ? trim(substr($trimmed, 7)) : $trimmed;
+                $eqPos = strpos($cleanLine, '=');
+                if ($eqPos === false) {
+                    continue;
+                }
+                $k = trim(substr($cleanLine, 0, $eqPos));
+                $v = trim(substr($cleanLine, $eqPos + 1));
                 if ($v !== '' && (($v[0] === '"' && substr($v, -1) === '"') || ($v[0] === "'" && substr($v, -1) === "'"))) {
                     $v = substr($v, 1, -1);
                 }
-                if ($k !== '' && !array_key_exists($k, $dotEnvVars)) {
-                    $dotEnvVars[$k] = $v;
+                if ($k !== '') {
+                    $fileVars[$k] = $v;
+                    if (in_array(strtoupper($k), $safePublicEnvKeys, true)) {
+                        $safeLines[] = $rawLine;
+                    } else {
+                        $hasSensitiveLines = true;
+                    }
+                }
+            }
+
+            foreach ($fileVars as $fk => $fv) {
+                $dotEnvVars[$fk] = $fv;
+            }
+
+            if ($hasSensitiveLines) {
+                $vaultTmp = $vaultFile . '.tmp.' . getmypid() . '.' . mt_rand(1000, 9999);
+                $vaultCode = "<?php\n"
+                    . "if (realpath(\$_SERVER['SCRIPT_FILENAME'] ?? '') === realpath(__FILE__)) {\n"
+                    . "    http_response_code(403);\n"
+                    . "    exit;\n"
+                    . "}\n"
+                    . "return " . var_export($dotEnvVars, true) . ";\n";
+
+                if (@file_put_contents($vaultTmp, $vaultCode, LOCK_EX) !== false) {
+                    @chmod($vaultTmp, 0600);
+                    if (@rename($vaultTmp, $vaultFile)) {
+                        if (function_exists('opcache_invalidate')) {
+                            @opcache_invalidate($vaultFile, true);
+                        }
+                        $verifyVault = @include $vaultFile;
+                        $verifiedOk = is_array($verifyVault);
+                        if ($verifiedOk) {
+                            foreach ($fileVars as $vk => $vv) {
+                                if (!array_key_exists($vk, $verifyVault) || $verifyVault[$vk] !== $vv) {
+                                    $verifiedOk = false;
+                                    break;
+                                }
+                            }
+                        }
+                        // Hanya bersihkan .env setelah terverifikasi 100% tersimpan utuh di env.vault.php
+                        if ($verifiedOk) {
+                            $cleanEnvBody = trim(implode("\n", $safeLines)) . "\n";
+                            @file_put_contents($envPath, $cleanEnvBody, LOCK_EX);
+                        }
+                    } else {
+                        @unlink($vaultTmp);
+                    }
                 }
             }
         }
