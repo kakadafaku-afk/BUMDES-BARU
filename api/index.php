@@ -885,6 +885,25 @@ try {
             ensurePesananTable($pdo);
         }
 
+        // Endpoint publik khusus Kalender Ketersediaan (tanpa data pribadi pemesan)
+        if ($method === "GET" && $subResource === "jadwal") {
+            $stmt = $pdo->query("SELECT id, jenis, nama_item, kategori_item, jumlah, tanggal_booking, status FROM pesanan WHERE jenis IN ('Booking Wisata', 'Booking Layanan Unit') AND COALESCE(status, 'Baru') != 'Dibatalkan' AND tanggal_booking IS NOT NULL AND TRIM(tanggal_booking) != '' ORDER BY tanggal_booking ASC, id DESC");
+            $rows = $stmt->fetchAll();
+            $jadwal = array_map(function($r) {
+                return [
+                    "id" => (int)$r['id'],
+                    "jenis" => $r['jenis'],
+                    "namaItem" => $r['nama_item'],
+                    "kategoriItem" => $r['kategori_item'],
+                    "jumlah" => $r['jumlah'],
+                    "tanggalBooking" => trim((string)$r['tanggal_booking']),
+                    "status" => $r['status'] ?: 'Baru',
+                ];
+            }, $rows);
+            echo json_encode($jadwal);
+            exit;
+        }
+
         if ($method === "GET") {
             requireAuth();
             $stmt = $pdo->query("SELECT * FROM pesanan ORDER BY id DESC");
