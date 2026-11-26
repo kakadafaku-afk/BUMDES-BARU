@@ -209,6 +209,9 @@ function ensureTablesExist($pdo) {
             $pdo->exec("ALTER TABLE berita MODIFY COLUMN gambar LONGTEXT DEFAULT NULL");
         } catch (Throwable $ignore) {}
         try {
+            $pdo->exec("ALTER TABLE berita ADD COLUMN galeri LONGTEXT DEFAULT NULL");
+        } catch (Throwable $ignore) {}
+        try {
             $pdo->exec("ALTER TABLE profil_desa ADD COLUMN foto_hero LONGTEXT DEFAULT NULL");
         } catch (Throwable $ignore) {}
         try {
@@ -355,6 +358,7 @@ function initDatabase($pdo) {
         ringkasan TEXT NOT NULL,
         isi LONGTEXT,
         gambar LONGTEXT DEFAULT NULL,
+        galeri LONGTEXT DEFAULT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 

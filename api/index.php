@@ -427,16 +427,69 @@ try {
         try {
             $pdo->exec("ALTER TABLE berita ADD COLUMN gambar LONGTEXT DEFAULT NULL");
         } catch (Throwable $ignore) {}
+        try {
+            $pdo->exec("ALTER TABLE berita ADD COLUMN galeri LONGTEXT DEFAULT NULL");
+        } catch (Throwable $ignore) {}
 
         $formatTanggalIndoPhp = function () {
             $bulan = [1 => 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
             return date('j') . ' ' . $bulan[(int)date('n')] . ' ' . date('Y');
         };
 
+        $extractGaleriRow = function ($r) {
+            $list = [];
+            if (!empty($r['galeri'])) {
+                $decoded = json_decode((string)$r['galeri'], true);
+                if (is_array($decoded)) {
+                    foreach ($decoded as $item) {
+                        if (is_string($item) && trim($item) !== '') {
+                            $list[] = trim($item);
+                        }
+                    }
+                }
+            }
+            $cover = isset($r['gambar']) && is_string($r['gambar']) && trim($r['gambar']) !== '' ? trim($r['gambar']) : null;
+            if (empty($list) && $cover !== null) {
+                $list = [$cover];
+            }
+            if (!empty($list) && $cover === null) {
+                $cover = $list[0];
+            }
+            return [$cover, array_slice($list, 0, 6)];
+        };
+
+        $normalizeGaleriInput = function ($bodyData) {
+            $hasGaleriKey = array_key_exists('galeri', $bodyData);
+            $hasGambarKey = array_key_exists('gambar', $bodyData) || array_key_exists('imageUrl', $bodyData);
+            if (!$hasGaleriKey && !$hasGambarKey) {
+                return [false, null, null];
+            }
+            $list = [];
+            if ($hasGaleriKey && is_array($bodyData['galeri'])) {
+                foreach ($bodyData['galeri'] as $item) {
+                    if (is_string($item) && trim($item) !== '') {
+                        $list[] = trim($item);
+                    }
+                }
+            } else {
+                $single = isset($bodyData['gambar'])
+                    ? trim((string)$bodyData['gambar'])
+                    : (isset($bodyData['imageUrl']) ? trim((string)$bodyData['imageUrl']) : '');
+                if ($single !== '') {
+                    $list[] = $single;
+                }
+            }
+            $list = array_slice(array_values($list), 0, 6);
+            $cover = !empty($list) ? $list[0] : null;
+            $galeriJson = !empty($list) ? json_encode($list) : null;
+            return [true, $cover, $galeriJson, $list];
+        };
+
         if ($method === "GET" && !$subResource) {
             $stmt = $pdo->query("SELECT * FROM berita ORDER BY id DESC");
             $rows = $stmt->fetchAll();
-            $data = array_map(function($r) {
+            $data = array_map(function($r) use ($extractGaleriRow) {
+                list($cover, $galeriList) = $extractGaleriRow($r);
                 return [
                     "id" => (int)$r['id'],
                     "judul" => $r['judul'],
@@ -444,7 +497,9 @@ try {
                     "tanggal" => $r['tanggal'],
                     "ringkasan" => $r['ringkasan'],
                     "isi" => $r['isi'] ?: $r['ringkasan'],
-                    "gambar" => $r['gambar'],
+                    "gambar" => $cover,
+                    "galeri" => $galeriList,
+                    "jumlahFoto" => count($galeriList),
                     "createdAt" => $r['created_at'] ?? null,
                 ];
             }, $rows);
@@ -461,6 +516,7 @@ try {
                 echo json_encode(["error" => "Berita tidak ditemukan."]);
                 exit;
             }
+            list($cover, $galeriList) = $extractGaleriRow($r);
             echo json_encode([
                 "id" => (int)$r['id'],
                 "judul" => $r['judul'],
@@ -468,7 +524,9 @@ try {
                 "tanggal" => $r['tanggal'],
                 "ringkasan" => $r['ringkasan'],
                 "isi" => $r['isi'] ?: $r['ringkasan'],
-                "gambar" => $r['gambar'],
+                "gambar" => $cover,
+                "galeri" => $galeriList,
+                "jumlahFoto" => count($galeriList),
                 "createdAt" => $r['created_at'] ?? null,
             ]);
             exit;
@@ -481,7 +539,8 @@ try {
             $tanggal = isset($body['tanggal']) && trim($body['tanggal']) !== '' ? trim($body['tanggal']) : $formatTanggalIndoPhp();
             $ringkasan = isset($body['ringkasan']) ? trim($body['ringkasan']) : '';
             $isi = isset($body['isi']) ? trim($body['isi']) : $ringkasan;
-            $gambar = isset($body['gambar']) ? trim($body['gambar']) : (isset($body['imageUrl']) ? trim($body['imageUrl']) : null);
+            list(, $gambar, $galeriJson, $galeriList) = $normalizeGaleriInput($body);
+            if (!is_array($galeriList)) $galeriList = [];
 
             if (!$judul || !$ringkasan) {
                 http_response_code(400);
@@ -489,8 +548,8 @@ try {
                 exit;
             }
 
-            $stmt = $pdo->prepare("INSERT INTO berita (judul, kategori, tanggal, ringkasan, isi, gambar) VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$judul, $kategori, $tanggal, $ringkasan, $isi, $gambar]);
+            $stmt = $pdo->prepare("INSERT INTO berita (judul, kategori, tanggal, ringkasan, isi, gambar, galeri) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$judul, $kategori, $tanggal, $ringkasan, $isi, $gambar, $galeriJson]);
             $newId = $pdo->lastInsertId();
 
             echo json_encode([
@@ -502,6 +561,8 @@ try {
                 "isi" => $isi,
                 "gambar" => $gambar,
                 "imageUrl" => $gambar,
+                "galeri" => $galeriList,
+                "jumlahFoto" => count($galeriList),
             ]);
             exit;
         }
@@ -514,10 +575,9 @@ try {
             $tanggal = isset($body['tanggal']) ? trim($body['tanggal']) : '';
             $ringkasan = isset($body['ringkasan']) ? trim($body['ringkasan']) : '';
             $isi = isset($body['isi']) ? trim($body['isi']) : '';
-            $hasGambarKey = array_key_exists('gambar', $body) || array_key_exists('imageUrl', $body);
-            $gambar = isset($body['gambar']) ? trim((string)$body['gambar']) : (isset($body['imageUrl']) ? trim((string)$body['imageUrl']) : '');
+            list($hasPhotoPayload, $gambar, $galeriJson) = $normalizeGaleriInput($body);
 
-            if ($hasGambarKey) {
+            if ($hasPhotoPayload) {
                 $stmt = $pdo->prepare("
                     UPDATE berita SET 
                         judul = COALESCE(NULLIF(?, ''), judul),
@@ -525,10 +585,11 @@ try {
                         tanggal = COALESCE(NULLIF(?, ''), tanggal),
                         ringkasan = COALESCE(NULLIF(?, ''), ringkasan),
                         isi = COALESCE(NULLIF(?, ''), isi),
-                        gambar = ?
+                        gambar = ?,
+                        galeri = ?
                     WHERE id = ?
                 ");
-                $stmt->execute([$judul, $kategori, $tanggal, $ringkasan, $isi, $gambar !== '' ? $gambar : null, $id]);
+                $stmt->execute([$judul, $kategori, $tanggal, $ringkasan, $isi, $gambar, $galeriJson, $id]);
             } else {
                 $stmt = $pdo->prepare("
                     UPDATE berita SET 
