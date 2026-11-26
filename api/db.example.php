@@ -7,30 +7,65 @@
 //   salin file ini menjadi api/db.php lalu isi kredensial Anda
 // =======================================================
 
-$readEnvConfig = function ($key, $default) {
-    $val = getenv($key);
-    if ($val !== false && $val !== '') return $val;
-    if (isset($_ENV[$key]) && $_ENV[$key] !== '') return $_ENV[$key];
-    if (isset($_SERVER[$key]) && $_SERVER[$key] !== '') return $_SERVER[$key];
+$dotEnvVars = [];
+foreach ([dirname(__DIR__) . '/.env', __DIR__ . '/.env'] as $envPath) {
+    if (@is_file($envPath) && @is_readable($envPath)) {
+        $envLines = @file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if (is_array($envLines)) {
+            foreach ($envLines as $envLine) {
+                $trimmed = trim($envLine);
+                if ($trimmed === '' || $trimmed[0] === '#') continue;
+                if (strpos($trimmed, 'export ') === 0) {
+                    $trimmed = trim(substr($trimmed, 7));
+                }
+                $eqPos = strpos($trimmed, '=');
+                if ($eqPos === false) continue;
+                $k = trim(substr($trimmed, 0, $eqPos));
+                $v = trim(substr($trimmed, $eqPos + 1));
+                if ($v !== '' && (($v[0] === '"' && substr($v, -1) === '"') || ($v[0] === "'" && substr($v, -1) === "'"))) {
+                    $v = substr($v, 1, -1);
+                }
+                if ($k !== '' && !array_key_exists($k, $dotEnvVars)) {
+                    $dotEnvVars[$k] = $v;
+                }
+            }
+        }
+    }
+}
+
+$readEnvConfig = function ($keys, $default, $allowEmpty = false) use ($dotEnvVars) {
+    $keyList = is_array($keys) ? $keys : [$keys];
+    foreach ($keyList as $key) {
+        $val = getenv($key);
+        if ($val !== false && ($allowEmpty || $val !== '')) return $val;
+        if (array_key_exists($key, $_ENV) && ($allowEmpty || $_ENV[$key] !== '')) return $_ENV[$key];
+        if (array_key_exists($key, $_SERVER) && is_string($_SERVER[$key]) && ($allowEmpty || $_SERVER[$key] !== '')) return $_SERVER[$key];
+        if (array_key_exists($key, $dotEnvVars) && ($allowEmpty || $dotEnvVars[$key] !== '')) return $dotEnvVars[$key];
+    }
     return $default;
 };
 
-$DB_HOST = $readEnvConfig('DB_HOST', 'localhost');
-$DB_NAME = $readEnvConfig('DB_NAME', 'nama_database');
-$DB_USER = $readEnvConfig('DB_USER', 'username_db');
-$DB_PASS = $readEnvConfig('DB_PASS', 'password_db');
-$JWT_SECRET = $readEnvConfig('JWT_SECRET', 'ganti-dengan-secret-key-acak-yang-panjang');
+$DB_HOST = $readEnvConfig(['DB_HOST', 'MYSQL_HOST'], 'localhost');
+$DB_PORT = $readEnvConfig(['DB_PORT', 'MYSQL_PORT'], '3306');
+$DB_NAME = $readEnvConfig(['DB_DATABASE', 'DB_NAME', 'MYSQL_DATABASE'], 'nama_database');
+$DB_USER = $readEnvConfig(['DB_USERNAME', 'DB_USER', 'MYSQL_USER'], 'username_db');
+$DB_PASS = $readEnvConfig(['DB_PASSWORD', 'DB_PASS', 'MYSQL_PASSWORD'], 'password_db', true);
+$JWT_SECRET = $readEnvConfig(
+    ['JWT_SECRET', 'APP_KEY'],
+    hash('sha256', 'bumdes-jwt|' . $DB_HOST . '|' . $DB_NAME . '|' . $DB_USER . '|' . $DB_PASS)
+);
 
 function getDb() {
-    global $DB_HOST, $DB_NAME, $DB_USER, $DB_PASS;
+    global $DB_HOST, $DB_PORT, $DB_NAME, $DB_USER, $DB_PASS;
     static $pdoInstance = null;
     if ($pdoInstance !== null) {
         return $pdoInstance;
     }
 
     try {
+        $portPart = !empty($DB_PORT) ? ";port={$DB_PORT}" : "";
         $pdo = new PDO(
-            "mysql:host={$DB_HOST};dbname={$DB_NAME};charset=utf8mb4",
+            "mysql:host={$DB_HOST}{$portPart};dbname={$DB_NAME};charset=utf8mb4",
             $DB_USER,
             $DB_PASS,
             [

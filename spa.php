@@ -79,8 +79,9 @@ if (isset($routeMeta[$path])) {
         try {
             require_once $dbConfig;
             if (isset($DB_HOST, $DB_NAME, $DB_USER, $DB_PASS)) {
+                $portPart = !empty($DB_PORT) ? ";port={$DB_PORT}" : "";
                 $pdo = new PDO(
-                    "mysql:host={$DB_HOST};dbname={$DB_NAME};charset=utf8mb4",
+                    "mysql:host={$DB_HOST}{$portPart};dbname={$DB_NAME};charset=utf8mb4",
                     $DB_USER,
                     $DB_PASS,
                     [

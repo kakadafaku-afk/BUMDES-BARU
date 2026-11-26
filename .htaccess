@@ -6,6 +6,9 @@
   RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
   SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
 
+  # 0. Blokir akses publik ke file tersembunyi (.env, .git, dll) kecuali .well-known (SSL)
+  RewriteRule (^|/)\.(?!well-known/) - [F,L]
+
   # 1. Routing API ke api/index.php
   RewriteCond %{REQUEST_URI} ^/api(/.*)?$
   RewriteRule ^api(/.*)?$ api/index.php [QSA,L]
