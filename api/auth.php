@@ -182,3 +182,95 @@ function requireAuth() {
 
     return $payloadData;
 }
+
+function getClientIpAddress() {
+    if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+        return trim(explode(',', (string)$_SERVER['HTTP_CF_CONNECTING_IP'])[0]);
+    }
+    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        return trim(explode(',', (string)$_SERVER['HTTP_X_FORWARDED_FOR'])[0]);
+    }
+    return (string)($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0');
+}
+
+function getRateLimitFile($bucket) {
+    $safeBucket = preg_replace('/[^a-zA-Z0-9_-]/', '_', (string)$bucket);
+    return rtrim(sys_get_temp_dir(), '/\\') . '/bumdes_rl_' . $safeBucket . '.json';
+}
+
+function checkRateLimit($bucket, $maxAttempts, $windowSeconds, $recordHit = true) {
+    $ipHash = hash('sha256', getClientIpAddress() . '|' . $bucket);
+    $file = getRateLimitFile($bucket);
+    $now = time();
+    $store = [];
+
+    if (@is_file($file)) {
+        $raw = @file_get_contents($file);
+        $decoded = @json_decode((string)$raw, true);
+        if (is_array($decoded)) {
+            foreach ($decoded as $k => $timestamps) {
+                if (is_array($timestamps)) {
+                    $valid = array_values(array_filter($timestamps, function ($ts) use ($now, $windowSeconds) {
+                        return is_int($ts) && ($now - $ts) < $windowSeconds;
+                    }));
+                    if (!empty($valid)) {
+                        $store[$k] = $valid;
+                    }
+                }
+            }
+        }
+    }
+
+    $hits = $store[$ipHash] ?? [];
+    if (count($hits) >= $maxAttempts) {
+        return false;
+    }
+
+    if ($recordHit) {
+        $hits[] = $now;
+        $store[$ipHash] = $hits;
+        @file_put_contents($file, json_encode($store), LOCK_EX);
+    }
+    return true;
+}
+
+function recordRateLimitHit($bucket, $windowSeconds) {
+    $ipHash = hash('sha256', getClientIpAddress() . '|' . $bucket);
+    $file = getRateLimitFile($bucket);
+    $now = time();
+    $store = [];
+
+    if (@is_file($file)) {
+        $raw = @file_get_contents($file);
+        $decoded = @json_decode((string)$raw, true);
+        if (is_array($decoded)) {
+            foreach ($decoded as $k => $timestamps) {
+                if (is_array($timestamps)) {
+                    $valid = array_values(array_filter($timestamps, function ($ts) use ($now, $windowSeconds) {
+                        return is_int($ts) && ($now - $ts) < $windowSeconds;
+                    }));
+                    if (!empty($valid)) {
+                        $store[$k] = $valid;
+                    }
+                }
+            }
+        }
+    }
+
+    $hits = $store[$ipHash] ?? [];
+    $hits[] = $now;
+    $store[$ipHash] = $hits;
+    @file_put_contents($file, json_encode($store), LOCK_EX);
+}
+
+function clearRateLimit($bucket) {
+    $ipHash = hash('sha256', getClientIpAddress() . '|' . $bucket);
+    $file = getRateLimitFile($bucket);
+    if (!@is_file($file)) return;
+    $raw = @file_get_contents($file);
+    $decoded = @json_decode((string)$raw, true);
+    if (is_array($decoded) && isset($decoded[$ipHash])) {
+        unset($decoded[$ipHash]);
+        @file_put_contents($file, json_encode($decoded), LOCK_EX);
+    }
+}

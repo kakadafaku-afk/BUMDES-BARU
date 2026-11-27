@@ -9,6 +9,9 @@
   # 0. Blokir akses publik ke file tersembunyi (.env, .git, dll) kecuali .well-known (SSL)
   RewriteRule (^|/)\.(?!well-known/) - [F,L]
 
+  # 0b. Sitemap XML dinamis
+  RewriteRule ^sitemap\.xml$ sitemap.php [L]
+
   # 1. Routing API ke api/index.php
   RewriteCond %{REQUEST_URI} ^/api(/.*)?$
   RewriteRule ^api(/.*)?$ api/index.php [QSA,L]

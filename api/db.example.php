@@ -148,89 +148,59 @@ function getDb() {
         $pdoInstance = $pdo;
         return $pdo;
     } catch (PDOException $e) {
+        error_log("BUMDes DB connection error: " . $e->getMessage());
+        $reqHost = strtolower((string)($_SERVER['HTTP_HOST'] ?? ''));
+        $isLocal = ($reqHost === '' || strpos($reqHost, 'localhost') === 0 || strpos($reqHost, '127.0.0.1') === 0);
         http_response_code(500);
         header('Content-Type: application/json');
-        echo json_encode([
-            "error" => "Koneksi ke Database MySQL gagal. Pastikan konfigurasi di api/db.php sudah benar.",
-            "detail" => $e->getMessage()
-        ]);
+        $errPayload = [
+            "error" => "Koneksi ke Database MySQL gagal. Pastikan konfigurasi database server sudah benar."
+        ];
+        if ($isLocal) {
+            $errPayload["detail"] = $e->getMessage();
+        }
+        echo json_encode($errPayload);
         exit;
     }
 }
 
 function ensureTablesExist($pdo) {
+    global $DB_HOST, $DB_NAME;
+    $lockFile = rtrim(sys_get_temp_dir(), '/\\') . '/bumdes_schema_v3_' . md5(($DB_HOST ?? '') . '|' . ($DB_NAME ?? '')) . '.ok';
+    if (@is_file($lockFile)) {
+        return;
+    }
+
     try {
         $check = $pdo->query("SELECT COUNT(*) as cnt FROM admins")->fetch();
         if (!$check || (int)$check['cnt'] === 0) {
             initDatabase($pdo);
+            @file_put_contents($lockFile, (string)time());
             return;
         }
 
-        // Migrasi otomatis satu kali jika database masih berisi data contoh lama (Lebuawu)
-        $profil = $pdo->query("SELECT email_desa, alamat_kantor FROM profil_desa WHERE id = 1")->fetch();
-        if ($profil && (
-            $profil['email_desa'] === 'desa.lebuawu@example.id' ||
-            stripos((string)$profil['alamat_kantor'], 'Lebuawu') !== false
-        )) {
-            seedSedyaMakmurData($pdo, true);
+        // Pastikan kolom tambahan tersedia dan bertipe LONGTEXT tanpa menimpa data yang sudah diedit Admin
+        $schemaStatements = [
+            "ALTER TABLE admins ADD COLUMN password_plain VARCHAR(255) DEFAULT 'admin123'",
+            "ALTER TABLE umkm ADD COLUMN gambar LONGTEXT DEFAULT NULL",
+            "ALTER TABLE umkm MODIFY COLUMN gambar LONGTEXT DEFAULT NULL",
+            "ALTER TABLE berita ADD COLUMN gambar LONGTEXT DEFAULT NULL",
+            "ALTER TABLE berita MODIFY COLUMN gambar LONGTEXT DEFAULT NULL",
+            "ALTER TABLE berita ADD COLUMN galeri LONGTEXT DEFAULT NULL",
+            "ALTER TABLE profil_desa ADD COLUMN foto_hero LONGTEXT DEFAULT NULL",
+            "ALTER TABLE profil_desa MODIFY COLUMN foto_hero LONGTEXT DEFAULT NULL",
+            "ALTER TABLE profil_desa ADD COLUMN foto_unit_wisata LONGTEXT DEFAULT NULL",
+            "ALTER TABLE profil_desa MODIFY COLUMN foto_unit_wisata LONGTEXT DEFAULT NULL",
+            "ALTER TABLE perangkat_desa ADD COLUMN foto LONGTEXT DEFAULT NULL",
+            "ALTER TABLE perangkat_desa MODIFY COLUMN foto LONGTEXT DEFAULT NULL",
+        ];
+        foreach ($schemaStatements as $sql) {
+            try {
+                $pdo->exec($sql);
+            } catch (Throwable $ignore) {}
         }
 
-        // Pastikan kolom password_plain tersedia pada tabel admins untuk fitur Lihat Detail Akun Admin
-        try {
-            $pdo->exec("ALTER TABLE admins ADD COLUMN password_plain VARCHAR(255) DEFAULT 'admin123'");
-        } catch (Throwable $ignore) {
-            // Kolom sudah ada
-        }
-
-        // Bersihkan entri Notaris/Akta & narasi modal 2016 lama jika masih tersisa di DB
-        $pdo->exec("UPDATE perangkat_desa SET jabatan = 'Pengelola Unit Usaha', nama = 'Tim Operasional BUMDes' WHERE jabatan LIKE '%Notaris%' OR nama LIKE '%Akta No. 14%'");
-        $pdo->exec("UPDATE berita SET isi = 'Sejak tahun 2017, BUMDes Sedya Makmur Desa Mayong Lor konsisten menyumbang Pendapatan Asli Desa setiap tahun. Dengan 6 unit usaha yang berkembang, BUMDes diproyeksikan menyumbang PAD Desa sebesar Rp 30.000.000 pada tahun 2026.' WHERE id = 4 AND isi LIKE '%modal desa Rp 25 juta%'");
-
-        // Migrasi otomatis standarisasi BUMDES menjadi BUMDes baku & kata baku KBBI (Hortikultura, Cabai)
-        $pdo->exec("UPDATE profil_desa SET nama_desa = REPLACE(nama_desa, 'BUMDES', 'BUMDes'), visi = REPLACE(visi, 'BUMDES', 'BUMDes') WHERE nama_desa LIKE '%BUMDES%' OR visi LIKE '%BUMDES%'");
-        $pdo->exec("UPDATE berita SET judul = REPLACE(judul, 'BUMDES', 'BUMDes'), ringkasan = REPLACE(ringkasan, 'BUMDES', 'BUMDes'), isi = REPLACE(isi, 'BUMDES', 'BUMDes') WHERE judul LIKE '%BUMDES%' OR ringkasan LIKE '%BUMDES%' OR isi LIKE '%BUMDES%'");
-        $pdo->exec("UPDATE berita SET judul = REPLACE(REPLACE(judul, 'Holtikultura', 'Hortikultura'), 'holtikultura', 'hortikultura'), ringkasan = REPLACE(REPLACE(ringkasan, 'Holtikultura', 'Hortikultura'), 'holtikultura', 'hortikultura'), isi = REPLACE(REPLACE(isi, 'Holtikultura', 'Hortikultura'), 'holtikultura', 'hortikultura') WHERE judul LIKE '%oltikultura%' OR ringkasan LIKE '%oltikultura%' OR isi LIKE '%oltikultura%'");
-        $pdo->exec("UPDATE umkm SET nama = REPLACE(nama, 'BUMDES', 'BUMDes'), deskripsi = REPLACE(deskripsi, 'BUMDES', 'BUMDes') WHERE nama LIKE '%BUMDES%' OR deskripsi LIKE '%BUMDES%'");
-        $pdo->exec("UPDATE umkm SET nama = REPLACE(REPLACE(nama, 'Holtikultura', 'Hortikultura'), 'Cabe', 'Cabai'), kategori = REPLACE(kategori, 'Holtikultura', 'Hortikultura'), deskripsi = REPLACE(REPLACE(REPLACE(deskripsi, 'Holtikultura', 'Hortikultura'), 'holtikultura', 'hortikultura'), 'cabe', 'cabai') WHERE nama LIKE '%oltikultura%' OR nama LIKE '%Cabe%' OR kategori LIKE '%oltikultura%' OR deskripsi LIKE '%oltikultura%' OR deskripsi LIKE '%cabe%'");
-        $pdo->exec("UPDATE admins SET nama = REPLACE(nama, 'BUMDES', 'BUMDes') WHERE nama LIKE '%BUMDES%'");
-        $pdo->exec("UPDATE statistik SET nilai = 6 WHERE label = 'Unit Usaha Aktif' AND nilai = 7");
-
-        // Pastikan kolom gambar tersedia dan bertipe LONGTEXT di tabel umkm, berita, dan profil_desa (foto_hero)
-        try {
-            $pdo->exec("ALTER TABLE umkm ADD COLUMN gambar LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE umkm MODIFY COLUMN gambar LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE berita ADD COLUMN gambar LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE berita MODIFY COLUMN gambar LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE berita ADD COLUMN galeri LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE profil_desa ADD COLUMN foto_hero LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE profil_desa MODIFY COLUMN foto_hero LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE profil_desa ADD COLUMN foto_unit_wisata LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE profil_desa MODIFY COLUMN foto_unit_wisata LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE perangkat_desa ADD COLUMN foto LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE perangkat_desa MODIFY COLUMN foto LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-
-        // Pastikan baris data utama profil_desa (id = 1) selalu ada dan tidak kosong
+        // Pastikan baris data utama profil_desa (id = 1) tersedia bila kosong
         $cekProfilRow = $pdo->query("SELECT COUNT(*) as cnt FROM profil_desa WHERE id = 1")->fetch();
         if (!$cekProfilRow || (int)$cekProfilRow['cnt'] === 0) {
             $misiJson = json_encode([
@@ -245,47 +215,12 @@ function ensureTablesExist($pdo) {
             $stmt->execute([$visi, $misiJson]);
         }
 
-        // Pastikan nama pengurus tampil bersih tanpa gelar akademis (SP, SAP, A.Md, S.Kom, dll)
-        $pdo->exec("UPDATE perangkat_desa SET nama = 'Budi Agus Trianto' WHERE nama LIKE '%Budi Agus Trianto%'");
-        $pdo->exec("UPDATE perangkat_desa SET nama = 'Mulyono' WHERE nama LIKE '%Mulyono%'");
-        $pdo->exec("UPDATE perangkat_desa SET nama = 'Eman Prasojo' WHERE nama LIKE '%Eman Prasojo%'");
-        $pdo->exec("UPDATE perangkat_desa SET nama = 'Sri Hartatik' WHERE nama LIKE '%Sri Hartatik%'");
-        $pdo->exec("UPDATE perangkat_desa SET nama = REPLACE(nama, ', SP, SAP', '')");
-        $pdo->exec("UPDATE perangkat_desa SET nama = REPLACE(nama, ', A.Md', '')");
-        $pdo->exec("UPDATE perangkat_desa SET nama = REPLACE(nama, ', S.Kom.', '')");
-        $pdo->exec("UPDATE perangkat_desa SET nama = REPLACE(nama, ' S.Kom.', '')");
-        $pdo->exec("UPDATE perangkat_desa SET nama = REPLACE(nama, ' S.Kom', '')");
-        $pdo->exec("UPDATE perangkat_desa SET nama = REPLACE(nama, ' A.Md', '')");
-        $pdo->exec("UPDATE perangkat_desa SET nama = REPLACE(nama, ' SP, SAP', '')");
-
-        // Migrasi berita #3 Order dari Spanyol: koreksi dari Mebel menjadi Genting tanpa menghapus gambar yang sudah diunggah
-        $pdo->exec("UPDATE berita SET 
-            judul = 'Tembus Pasar Global: Produk Genting Mayong Lor BUMDes Sedya Makmur Raih Order Ekspor ke Spanyol',
-            kategori = 'Ekspor & Genting',
-            ringkasan = 'Kualitas produk genting tanah liat khas Desa Mayong Lor di bawah naungan BUMDes Sedya Makmur sukses menembus pasar Eropa melalui pesanan ekspor langsung ke Spanyol.',
-            isi = 'Produk genting dan kerajinan tanah liat terakota berkualitas tinggi hasil karya pengrajin lokal binaan BUMDes Sedya Makmur Desa Mayong Lor mencatatkan pencapaian membanggakan dengan berhasil menembus pasar internasional melalui pesanan ekspor langsung dari buyer asal Spanyol. Keunggulan kualitas pembakaran, ketahanan material, serta presisi bentuk khas pengrajin Mayong Lor membuktikan bahwa produk genting desa memiliki standar unggul dan berdaya saing global melalui Unit Usaha Gerabah & Kerajinan BUMDes Sedya Makmur.'
-            WHERE judul LIKE '%Spanyol%' AND (judul LIKE '%Mebel%' OR ringkasan LIKE '%mebel%' OR isi LIKE '%mebel%')");
-
-        // Pastikan daftar berita awal (Gebyar, Potorono, Order Genting Spanyol) tersedia jika belum ada berita Spanyol
-        $cekBeritaGenting = $pdo->query("SELECT id FROM berita WHERE judul LIKE '%Spanyol%' LIMIT 1")->fetch();
-        if (!$cekBeritaGenting) {
-            $pdo->exec("TRUNCATE TABLE berita");
-            $pdo->exec("INSERT INTO berita (id, judul, kategori, tanggal, ringkasan, isi) VALUES 
-                (1, 'Gebyar BUMDes Jepara: BUMDes Sedya Makmur Tampilkan Inovasi Produk Unggulan Mayong Lor', 'Event & Prestasi', '15 Oktober 2026', 'BUMDes Sedya Makmur berpartisipasi aktif dalam ajang Gebyar BUMDes Kabupaten Jepara, memamerkan produk gerabah, hortikultura, hingga kemitraan kuliner UMKM desa.', 'Dalam rangka memeriahkan ajang Gebyar BUMDes Kabupaten Jepara, BUMDes Sedya Makmur Desa Mayong Lor hadir memamerkan berbagai produk unggulan dan potensi ekonomi desa. Di stan pameran, BUMDes menampilkan kerajinan gerabah dan bata tempel terakota, produk pertanian hortikultura dan hidroponik, susu kambing etawa, serta olahan kuliner UMKM lokal. Partisipasi ini menjadi momentum strategis untuk memperluas jejaring pasar, mengenalkan inovasi desa, serta memperkokoh posisi BUMDes Sedya Makmur sebagai lembaga usaha desa yang mandiri dan berdaya saing di tingkat kabupaten.'),
-                (2, 'Studi Banding ke BUMDes Desa Potorono untuk Penguatan Tata Kelola & Wisata Edukasi', 'Studi Banding', '24 September 2026', 'Pengurus BUMDes Sedya Makmur melaksanakan kunjungan studi tiru ke BUMDes Mekar Makmur Desa Potorono, Bantul guna mengadopsi pengelolaan wisata terpadu dan digitalisasi usaha.', 'Guna terus meningkatkan kapasitas manajerial dan kualitas pengelolaan unit usaha, jajaran pengurus dan pengelola BUMDes Sedya Makmur Desa Mayong Lor melaksanakan kegiatan studi banding ke BUMDes Potorono di Kabupaten Bantul, D.I. Yogyakarta. Fokus studi tiru ini mencakup tata kelola kawasan wisata edukasi desa yang terintegrasi dengan UMKM lokal, sistem akuntansi keuangan transparan, serta pemanfaatan teknologi digital dalam pelayanan warga. Wawasan yang diperoleh dari kunjungan ini akan diadopsi untuk mematangkan pengembangan paket wisata edukasi dan optimalisasi 6 unit usaha BUMDes Sedya Makmur.'),
-                (3, 'Tembus Pasar Global: Produk Genting Mayong Lor BUMDes Sedya Makmur Raih Order Ekspor ke Spanyol', 'Ekspor & Genting', '5 November 2026', 'Kualitas produk genting tanah liat khas Desa Mayong Lor di bawah naungan BUMDes Sedya Makmur sukses menembus pasar Eropa melalui pesanan ekspor langsung ke Spanyol.', 'Produk genting dan kerajinan tanah liat terakota berkualitas tinggi hasil karya pengrajin lokal binaan BUMDes Sedya Makmur Desa Mayong Lor mencatatkan pencapaian membanggakan dengan berhasil menembus pasar internasional melalui pesanan ekspor langsung dari buyer asal Spanyol. Keunggulan kualitas pembakaran, ketahanan material, serta presisi bentuk khas pengrajin Mayong Lor membuktikan bahwa produk genting desa memiliki standar unggul dan berdaya saing global melalui Unit Usaha Gerabah & Kerajinan BUMDes Sedya Makmur.')");
-        }
-
-        // Lengkapi format tanggal (tanggal, bulan, tahun) pada 3 berita awal bila masih berisi '2026' saja
-        $pdo->exec("UPDATE berita SET tanggal = '15 Oktober 2026' WHERE id = 1 AND (tanggal = '2026' OR tanggal = '')");
-        $pdo->exec("UPDATE berita SET tanggal = '24 September 2026' WHERE id = 2 AND (tanggal = '2026' OR tanggal = '')");
-        $pdo->exec("UPDATE berita SET tanggal = '5 November 2026' WHERE id = 3 AND (tanggal = '2026' OR tanggal = '')");
-
-        // Pastikan tabel pesanan (pencatatan pembelian produk & booking wisata/layanan) tersedia
         ensurePesananTable($pdo);
+        @file_put_contents($lockFile, (string)time());
     } catch (Throwable $e) {
-        // Tabel belum ada, buat otomatis
+        // Tabel belum ada sama sekali, buat skema awal
         initDatabase($pdo);
+        @file_put_contents($lockFile, (string)time());
     }
 }
 

@@ -7,9 +7,27 @@
 error_reporting(E_ALL & ~E_NOTICE & ~E_WARNING);
 ini_set('display_errors', '0');
 
-header("Access-Control-Allow-Origin: *");
+// Batasi CORS hanya ke domain resmi & localhost pengembangan
+$reqOrigin = isset($_SERVER['HTTP_ORIGIN']) ? trim((string)$_SERVER['HTTP_ORIGIN']) : '';
+$allowedOrigins = [
+    'https://bumdessedyamakmur.my.id',
+    'https://www.bumdessedyamakmur.my.id',
+];
+if ($reqOrigin !== '') {
+    $parsedHost = strtolower((string)parse_url($reqOrigin, PHP_URL_HOST));
+    $currHost = strtolower(explode(':', (string)($_SERVER['HTTP_HOST'] ?? ''))[0]);
+    if (
+        in_array($reqOrigin, $allowedOrigins, true) ||
+        $parsedHost === 'localhost' ||
+        $parsedHost === '127.0.0.1' ||
+        ($currHost !== '' && $parsedHost === $currHost)
+    ) {
+        header("Access-Control-Allow-Origin: " . $reqOrigin);
+        header("Vary: Origin");
+    }
+}
 header("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Authorization, X-Admin-Token, X-Requested-With");
 header("Content-Type: application/json; charset=UTF-8");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -53,6 +71,13 @@ try {
     // ----------------------------------------------------
     if ($resource === "auth") {
         if ($subResource === "login" && $method === "POST") {
+            // Batasi maksimal 5 percobaan login gagal dalam 10 menit per IP
+            if (!checkRateLimit('login_fail', 5, 600, false)) {
+                http_response_code(429);
+                echo json_encode(["error" => "Terlalu banyak percobaan login gagal. Silakan tunggu 10 menit lalu coba lagi."]);
+                exit;
+            }
+
             $username = isset($body['username']) ? trim($body['username']) : '';
             $password = isset($body['password']) ? trim($body['password']) : '';
 
@@ -66,17 +91,21 @@ try {
             $stmt->execute([$username]);
             $admin = $stmt->fetch();
 
-            // Self-healing: jika akun default 'admin' belum ada di database, buat otomatis
+            // Self-healing HANYA jika tabel admins benar-benar kosong sama sekali (0 akun)
             if (!$admin && $username === 'admin') {
-                $passHash = password_hash('admin123', PASSWORD_BCRYPT);
-                $ins = $pdo->prepare("INSERT INTO admins (id, username, password, nama, role) VALUES (1, 'admin', ?, 'Administrator Desa', 'SUPERADMIN')");
-                $ins->execute([$passHash]);
+                $totalAdmins = (int)($pdo->query("SELECT COUNT(*) FROM admins")->fetchColumn() ?: 0);
+                if ($totalAdmins === 0) {
+                    $passHash = password_hash('admin123', PASSWORD_BCRYPT);
+                    $ins = $pdo->prepare("INSERT INTO admins (id, username, password, nama, role) VALUES (1, 'admin', ?, 'Administrator Desa', 'SUPERADMIN')");
+                    $ins->execute([$passHash]);
 
-                $stmt->execute([$username]);
-                $admin = $stmt->fetch();
+                    $stmt->execute([$username]);
+                    $admin = $stmt->fetch();
+                }
             }
 
             if (!$admin) {
+                recordRateLimitHit('login_fail', 600);
                 http_response_code(401);
                 echo json_encode(["error" => "Username atau kata sandi salah."]);
                 exit;
@@ -88,10 +117,13 @@ try {
                 || ($plainSaved === null && $password === 'admin123' && $username === 'admin');
 
             if (!$match) {
+                recordRateLimitHit('login_fail', 600);
                 http_response_code(401);
                 echo json_encode(["error" => "Username atau kata sandi salah."]);
                 exit;
             }
+
+            clearRateLimit('login_fail');
 
             if ($plainSaved !== $password) {
                 try {
@@ -307,7 +339,7 @@ try {
                 "jamPelayanan" => $row['jam_pelayanan'],
                 "noTelepon" => $row['no_telepon'],
                 "emailDesa" => $row['email_desa'],
-                "fotoHero" => $row['foto_hero'] ?? null,
+                "fotoHero" => null,
                 "fotoUnitWisata" => (object)$fotoUnitWisata,
             ]);
             exit;
@@ -455,7 +487,7 @@ try {
             if (!empty($list) && $cover === null) {
                 $cover = $list[0];
             }
-            return [$cover, array_slice($list, 0, 6)];
+            return [$cover, array_slice($list, 0, 8)];
         };
 
         $normalizeGaleriInput = function ($bodyData) {
@@ -479,7 +511,7 @@ try {
                     $list[] = $single;
                 }
             }
-            $list = array_slice(array_values($list), 0, 6);
+            $list = array_slice(array_values($list), 0, 8);
             $cover = !empty($list) ? $list[0] : null;
             $galeriJson = !empty($list) ? json_encode($list) : null;
             return [true, $cover, $galeriJson, $list];
@@ -901,9 +933,15 @@ try {
         }
 
         if ($method === "POST") {
-            $nama = isset($body['nama']) ? trim($body['nama']) : '';
-            $email = isset($body['email']) ? trim($body['email']) : '';
-            $pesan = isset($body['pesan']) ? trim($body['pesan']) : '';
+            if (!checkRateLimit('public_pengaduan', 5, 600, true)) {
+                http_response_code(429);
+                echo json_encode(["error" => "Terlalu banyak pengiriman pesan dalam waktu singkat. Silakan coba lagi beberapa menit lagi."]);
+                exit;
+            }
+
+            $nama = isset($body['nama']) ? mb_substr(trim((string)$body['nama']), 0, 100) : '';
+            $email = isset($body['email']) ? mb_substr(trim((string)$body['email']), 0, 120) : '';
+            $pesan = isset($body['pesan']) ? mb_substr(trim((string)$body['pesan']), 0, 3000) : '';
 
             if (!$nama || !$email || !$pesan) {
                 http_response_code(400);
@@ -991,16 +1029,37 @@ try {
         }
 
         if ($method === "POST") {
-            $namaPembeli = isset($body['namaPembeli']) ? trim($body['namaPembeli']) : '';
-            $noWa = isset($body['noWa']) ? trim($body['noWa']) : '';
-            $jenis = isset($body['jenis']) && trim($body['jenis']) !== '' ? trim($body['jenis']) : 'Pembelian Produk';
-            $namaItem = isset($body['namaItem']) ? trim($body['namaItem']) : '';
-            $kategoriItem = isset($body['kategoriItem']) ? trim($body['kategoriItem']) : '';
-            $jumlah = isset($body['jumlah']) && trim($body['jumlah']) !== '' ? trim($body['jumlah']) : '1';
-            $hargaEstimasi = isset($body['hargaEstimasi']) && trim($body['hargaEstimasi']) !== '' ? trim($body['hargaEstimasi']) : '-';
-            $tanggalBooking = isset($body['tanggalBooking']) && trim($body['tanggalBooking']) !== '' ? trim($body['tanggalBooking']) : date('Y-m-d');
-            $alamatCatatan = isset($body['alamatCatatan']) ? trim($body['alamatCatatan']) : '';
-            $status = isset($body['status']) && trim($body['status']) !== '' ? trim($body['status']) : 'Baru';
+            $hasAdminJwt = false;
+            $rawJwt = getCurrentJwtToken();
+            if ($rawJwt !== '' && !isJwtTokenRevoked($rawJwt)) {
+                $parts = explode('.', $rawJwt);
+                if (count($parts) === 3) {
+                    $sig = base64UrlEncode(hash_hmac('sha256', $parts[0] . "." . $parts[1], $JWT_SECRET, true));
+                    $pl = json_decode(base64UrlDecode($parts[1]), true);
+                    if (hash_equals($sig, $parts[2]) && is_array($pl) && (!isset($pl['exp']) || $pl['exp'] >= time())) {
+                        $hasAdminJwt = true;
+                    }
+                }
+            }
+
+            if (!$hasAdminJwt && !checkRateLimit('public_pesanan', 8, 600, true)) {
+                http_response_code(429);
+                echo json_encode(["error" => "Terlalu banyak pengajuan pesanan/booking dalam waktu singkat. Silakan tunggu beberapa menit."]);
+                exit;
+            }
+
+            $namaPembeli = isset($body['namaPembeli']) ? mb_substr(trim((string)$body['namaPembeli']), 0, 120) : '';
+            $noWa = isset($body['noWa']) ? mb_substr(trim((string)$body['noWa']), 0, 40) : '';
+            $jenis = isset($body['jenis']) && trim((string)$body['jenis']) !== '' ? mb_substr(trim((string)$body['jenis']), 0, 50) : 'Pembelian Produk';
+            $namaItem = isset($body['namaItem']) ? mb_substr(trim((string)$body['namaItem']), 0, 200) : '';
+            $kategoriItem = isset($body['kategoriItem']) ? mb_substr(trim((string)$body['kategoriItem']), 0, 100) : '';
+            $jumlah = isset($body['jumlah']) && trim((string)$body['jumlah']) !== '' ? mb_substr(trim((string)$body['jumlah']), 0, 100) : '1';
+            $hargaEstimasi = isset($body['hargaEstimasi']) && trim((string)$body['hargaEstimasi']) !== '' ? mb_substr(trim((string)$body['hargaEstimasi']), 0, 100) : '-';
+            $tanggalBooking = isset($body['tanggalBooking']) && trim((string)$body['tanggalBooking']) !== '' ? mb_substr(trim((string)$body['tanggalBooking']), 0, 50) : date('Y-m-d');
+            $alamatCatatan = isset($body['alamatCatatan']) ? mb_substr(trim((string)$body['alamatCatatan']), 0, 2000) : '';
+            $allowedStatuses = ['Baru', 'Diproses', 'Selesai', 'Dibatalkan'];
+            $requestedStatus = isset($body['status']) ? trim((string)$body['status']) : 'Baru';
+            $status = ($hasAdminJwt && in_array($requestedStatus, $allowedStatuses, true)) ? $requestedStatus : 'Baru';
 
             if (!$namaPembeli || !$noWa || !$namaItem) {
                 http_response_code(400);
@@ -1229,10 +1288,15 @@ try {
     echo json_encode(["error" => "Endpoint tidak ditemukan: /api/{$path}"]);
 
 } catch (Throwable $e) {
+    error_log("BUMDes API runtime error: " . $e->getMessage() . " in " . basename($e->getFile()) . ":" . $e->getLine());
+    $reqHost = strtolower((string)($_SERVER['HTTP_HOST'] ?? ''));
+    $isLocal = ($reqHost === '' || strpos($reqHost, 'localhost') === 0 || strpos($reqHost, '127.0.0.1') === 0);
     http_response_code(500);
-    echo json_encode([
-        "error" => "Terjadi kesalahan server: " . $e->getMessage(),
-        "file" => basename($e->getFile()),
-        "line" => $e->getLine()
-    ]);
+    $errOut = ["error" => "Terjadi kesalahan pada server. Silakan coba sesaat lagi."];
+    if ($isLocal) {
+        $errOut["detail"] = $e->getMessage();
+        $errOut["file"] = basename($e->getFile());
+        $errOut["line"] = $e->getLine();
+    }
+    echo json_encode($errOut);
 }

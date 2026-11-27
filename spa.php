@@ -15,7 +15,10 @@ if (!file_exists($indexFile)) {
 $html = file_get_contents($indexFile);
 
 $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-$host = $_SERVER['HTTP_HOST'] ?? 'sedyamakmur2026.site.je';
+if (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string)$_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') {
+    $scheme = 'https';
+}
+$host = $_SERVER['HTTP_HOST'] ?? 'bumdessedyamakmur.my.id';
 $baseUrl = $scheme . '://' . $host;
 $rawUri = $_SERVER['REQUEST_URI'] ?? '/';
 $path = rtrim((string)parse_url($rawUri, PHP_URL_PATH), '/');
@@ -121,6 +124,13 @@ if (isset($routeMeta[$path])) {
 }
 
 $pageUrl = $baseUrl . ($path === '/' ? '/' : $path);
+$isAdminRoute = (strpos($path, '/admin') === 0);
+$isKnownRoute = ($path === '/' || isset($routeMeta[$path]) || $isAdminRoute || preg_match('#^/berita/\d+$#', $path));
+if (!$isKnownRoute) {
+    http_response_code(404);
+}
+$robotsMeta = $isAdminRoute ? 'noindex, nofollow' : 'index, follow';
+
 $esc = function ($val) {
     return htmlspecialchars((string)$val, ENT_QUOTES, 'UTF-8');
 };
@@ -130,6 +140,7 @@ $eDesc = $esc($desc);
 $eUrl = $esc($pageUrl);
 $eImg = $esc($ogImage);
 $eType = $esc($ogType);
+$eRobots = $esc($robotsMeta);
 
 $replaceRegex = function ($pattern, $replacement, $subject) {
     return preg_replace_callback($pattern, function () use ($replacement) {
@@ -138,6 +149,8 @@ $replaceRegex = function ($pattern, $replacement, $subject) {
 };
 
 $html = $replaceRegex('/<title>.*?<\/title>/is', '<title>' . $eTitle . '</title>', $html);
+$html = $replaceRegex('/<meta\s+name="robots"\s+content="[^"]*"\s*\/?>/i', '<meta name="robots" content="' . $eRobots . '" />', $html);
+$html = $replaceRegex('/<link\s+rel="canonical"\s+href="[^"]*"\s*\/?>/i', '<link rel="canonical" href="' . $eUrl . '" />', $html);
 $html = $replaceRegex('/<meta\s+name="description"\s+content="[^"]*"\s*\/?>/i', '<meta name="description" content="' . $eDesc . '" />', $html);
 $html = $replaceRegex('/<meta\s+property="og:type"\s+content="[^"]*"\s*\/?>/i', '<meta property="og:type" content="' . $eType . '" />', $html);
 $html = $replaceRegex('/<meta\s+property="og:url"\s+content="[^"]*"\s*\/?>/i', '<meta property="og:url" content="' . $eUrl . '" />', $html);
@@ -147,5 +160,25 @@ $html = $replaceRegex('/<meta\s+property="og:image"\s+content="[^"]*"\s*\/?>/i',
 $html = $replaceRegex('/<meta\s+name="twitter:title"\s+content="[^"]*"\s*\/?>/i', '<meta name="twitter:title" content="' . $eTitle . '" />', $html);
 $html = $replaceRegex('/<meta\s+name="twitter:description"\s+content="[^"]*"\s*\/?>/i', '<meta name="twitter:description" content="' . $eDesc . '" />', $html);
 $html = $replaceRegex('/<meta\s+name="twitter:image"\s+content="[^"]*"\s*\/?>/i', '<meta name="twitter:image" content="' . $eImg . '" />', $html);
+
+if ($ogType === 'article') {
+    $articleSchema = json_encode([
+        "@context" => "https://schema.org",
+        "@type" => "NewsArticle",
+        "headline" => $title,
+        "description" => $desc,
+        "image" => [$ogImage],
+        "mainEntityOfPage" => $pageUrl,
+        "publisher" => [
+            "@type" => "Organization",
+            "name" => "BUMDes Sedya Makmur Desa Mayong Lor",
+            "logo" => [
+                "@type" => "ImageObject",
+                "url" => $baseUrl . "/logo-bumdes.png"
+            ]
+        ]
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    $html = str_replace('</head>', "  <script type=\"application/ld+json\">{$articleSchema}</script>\n</head>", $html);
+}
 
 echo $html;

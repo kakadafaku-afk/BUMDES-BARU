@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/
+
+Sitemap: https://bumdessedyamakmur.my.id/sitemap.php
+Sitemap: https://bumdessedyamakmur.my.id/sitemap.xml
