@@ -81,7 +81,7 @@ function isJwtTokenRevoked($jwt) {
 }
 
 function getAuthHeader() {
-    // 1. Cek dari Custom HTTP Headers (tidak pernah dihapus oleh Apache/FastCGI di cPanel/InfinityFree)
+    // 1. Cek dari Custom HTTP Headers (aman, tidak terekam di URL log & kebal pembersihan FastCGI)
     if (!empty($_SERVER['HTTP_X_AUTHORIZATION'])) {
         return $_SERVER['HTTP_X_AUTHORIZATION'];
     }
@@ -89,15 +89,7 @@ function getAuthHeader() {
         return "Bearer " . $_SERVER['HTTP_X_ADMIN_TOKEN'];
     }
 
-    // 2. Cek dari Query Parameter URL (?auth_token=... atau ?token=...)
-    if (!empty($_GET['auth_token'])) {
-        return "Bearer " . $_GET['auth_token'];
-    }
-    if (!empty($_GET['token'])) {
-        return "Bearer " . $_GET['token'];
-    }
-
-    // 3. Cek $_SERVER standar
+    // 2. Cek $_SERVER standar
     if (!empty($_SERVER['HTTP_AUTHORIZATION'])) {
         return $_SERVER['HTTP_AUTHORIZATION'];
     }

@@ -4,6 +4,10 @@ header('Content-Type: text/html; charset=UTF-8');
 header('Cache-Control: no-cache, no-store, must-revalidate, max-age=0');
 header('Pragma: no-cache');
 header('Expires: 0');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
 
 $indexFile = __DIR__ . '/index.html';
 if (!file_exists($indexFile)) {
@@ -18,7 +22,13 @@ $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' :
 if (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string)$_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') {
     $scheme = 'https';
 }
-$host = $_SERVER['HTTP_HOST'] ?? 'bumdessedyamakmur.my.id';
+$rawHost = strtolower(trim((string)($_SERVER['HTTP_HOST'] ?? 'bumdessedyamakmur.my.id')));
+$hostOnly = explode(':', $rawHost)[0];
+$allowedHosts = ['bumdessedyamakmur.my.id', 'www.bumdessedyamakmur.my.id', 'localhost', '127.0.0.1'];
+$host = in_array($hostOnly, $allowedHosts, true) ? $rawHost : 'bumdessedyamakmur.my.id';
+if ($hostOnly === 'bumdessedyamakmur.my.id' || $hostOnly === 'www.bumdessedyamakmur.my.id') {
+    $scheme = 'https';
+}
 $baseUrl = $scheme . '://' . $host;
 $rawUri = $_SERVER['REQUEST_URI'] ?? '/';
 $path = rtrim((string)parse_url($rawUri, PHP_URL_PATH), '/');

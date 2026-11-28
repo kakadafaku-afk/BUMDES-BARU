@@ -1,13 +1,17 @@
 <?php
 header('Content-Type: application/xml; charset=UTF-8');
 header('Cache-Control: public, max-age=3600, must-revalidate');
+header('X-Content-Type-Options: nosniff');
 
 $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
 if (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string)$_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') {
     $scheme = 'https';
 }
-$host = $_SERVER['HTTP_HOST'] ?? 'bumdessedyamakmur.my.id';
-$baseUrl = ($host === 'localhost' || strpos($host, 'localhost:') === 0 || strpos($host, '127.0.0.1') === 0)
+$rawHost = strtolower(trim((string)($_SERVER['HTTP_HOST'] ?? 'bumdessedyamakmur.my.id')));
+$hostOnly = explode(':', $rawHost)[0];
+$allowedHosts = ['bumdessedyamakmur.my.id', 'www.bumdessedyamakmur.my.id', 'localhost', '127.0.0.1'];
+$host = in_array($hostOnly, $allowedHosts, true) ? $rawHost : 'bumdessedyamakmur.my.id';
+$baseUrl = ($hostOnly === 'localhost' || $hostOnly === '127.0.0.1')
     ? ($scheme . '://' . $host)
     : 'https://' . $host;
 

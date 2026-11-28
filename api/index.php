@@ -29,11 +29,30 @@ if ($reqOrigin !== '') {
 header("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Authorization, X-Admin-Token, X-Requested-With");
 header("Content-Type: application/json; charset=UTF-8");
+header("X-Content-Type-Options: nosniff");
+header("X-Frame-Options: DENY");
+header("Referrer-Policy: strict-origin-when-cross-origin");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
+
+$sanitizeImageValue = function ($val) {
+    if (!is_string($val)) return null;
+    $v = trim($val);
+    if ($v === '') return null;
+    if (preg_match('/^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+\/=]+$/i', $v) && strlen($v) <= 3000000) {
+        return $v;
+    }
+    if (preg_match('#^https?://[^\s<>"\']+$#i', $v) && strlen($v) <= 1000) {
+        return $v;
+    }
+    if (preg_match('#^/[A-Za-z0-9_\-./]+$#', $v) && strpos($v, '..') === false && strlen($v) <= 500) {
+        return $v;
+    }
+    return null;
+};
 
 $dbConfigFile = file_exists(__DIR__ . "/db.php") ? (__DIR__ . "/db.php") : (__DIR__ . "/db.example.php");
 require_once $dbConfigFile;
@@ -62,7 +81,7 @@ try {
     // HEALTH CHECK
     // ----------------------------------------------------
     if ($resource === "health") {
-        echo json_encode(["status" => "ok", "message" => "API PHP InfinityFree Aktif", "time" => date("Y-m-d H:i:s")]);
+        echo json_encode(["status" => "ok", "message" => "API BUMDes Sedya Makmur Aktif", "time" => date("Y-m-d H:i:s")]);
         exit;
     }
 
@@ -111,10 +130,7 @@ try {
                 exit;
             }
 
-            $plainSaved = isset($admin['password_plain']) && $admin['password_plain'] !== '' ? $admin['password_plain'] : null;
-            $match = password_verify($password, $admin['password'])
-                || ($plainSaved !== null && hash_equals($plainSaved, $password))
-                || ($plainSaved === null && $password === 'admin123' && $username === 'admin');
+            $match = !empty($admin['password']) && password_verify($password, (string)$admin['password']);
 
             if (!$match) {
                 recordRateLimitHit('login_fail', 600);
@@ -124,14 +140,6 @@ try {
             }
 
             clearRateLimit('login_fail');
-
-            if ($plainSaved !== $password) {
-                try {
-                    $upPlain = $pdo->prepare("UPDATE admins SET password_plain = ? WHERE id = ?");
-                    $upPlain->execute([$password, $admin['id']]);
-                    $admin['password_plain'] = $password;
-                } catch (Throwable $ignore) {}
-            }
 
             $token = createToken($admin);
             echo json_encode([
@@ -143,7 +151,6 @@ try {
                     "username" => $admin['username'],
                     "nama" => $admin['nama'],
                     "role" => $admin['role'],
-                    "passwordPlain" => $admin['password_plain'] ?? $password,
                     "createdAt" => $admin['created_at'] ?? null,
                 ]
             ]);
@@ -177,15 +184,10 @@ try {
                 $admin = $stmt->fetch();
             }
 
-            // Gunakan payload JWT yang telah terverifikasi secara kriptografis sebagai fallback terpercaya
             if (!$admin) {
-                $admin = [
-                    "id" => (int)($user['id'] ?? 1),
-                    "username" => $user['username'] ?? 'admin',
-                    "nama" => $user['nama'] ?? 'Administrator Desa',
-                    "role" => $user['role'] ?? 'SUPERADMIN',
-                    "password_plain" => 'admin123',
-                ];
+                http_response_code(401);
+                echo json_encode(["error" => "Akun admin tidak ditemukan atau sesi tidak lagi valid."]);
+                exit;
             }
 
             echo json_encode([
@@ -193,7 +195,6 @@ try {
                 "username" => $admin['username'],
                 "nama" => $admin['nama'],
                 "role" => $admin['role'],
-                "passwordPlain" => !empty($admin['password_plain']) ? $admin['password_plain'] : 'admin123',
                 "createdAt" => $admin['created_at'] ?? null,
             ]);
             exit;
@@ -221,8 +222,8 @@ try {
             }
 
             $currentPassword = isset($body['currentPassword']) ? trim($body['currentPassword']) : '';
-            $newUsername = isset($body['username']) && trim($body['username']) !== '' ? trim($body['username']) : $admin['username'];
-            $newNama = isset($body['nama']) && trim($body['nama']) !== '' ? trim($body['nama']) : $admin['nama'];
+            $newUsername = isset($body['username']) && trim($body['username']) !== '' ? mb_substr(trim($body['username']), 0, 50) : $admin['username'];
+            $newNama = isset($body['nama']) && trim($body['nama']) !== '' ? mb_substr(trim($body['nama']), 0, 100) : $admin['nama'];
             $newPassword = isset($body['newPassword']) ? trim($body['newPassword']) : '';
 
             if (!$currentPassword) {
@@ -231,17 +232,16 @@ try {
                 exit;
             }
 
-            $plainSaved = !empty($admin['password_plain']) ? $admin['password_plain'] : 'admin123';
-            $validCurrent = password_verify($currentPassword, $admin['password']) || hash_equals($plainSaved, $currentPassword);
+            $validCurrent = !empty($admin['password']) && password_verify($currentPassword, (string)$admin['password']);
             if (!$validCurrent) {
                 http_response_code(400);
                 echo json_encode(["error" => "Password saat ini yang Anda masukkan tidak sesuai."]);
                 exit;
             }
 
-            if ($newPassword !== '' && strlen($newPassword) < 5) {
+            if ($newPassword !== '' && strlen($newPassword) < 6) {
                 http_response_code(400);
-                echo json_encode(["error" => "Password baru minimal harus terdiri dari 5 karakter."]);
+                echo json_encode(["error" => "Password baru minimal harus terdiri dari 6 karakter."]);
                 exit;
             }
 
@@ -259,15 +259,25 @@ try {
             $finalPlainPassword = $newPassword !== '' ? $newPassword : $currentPassword;
             $finalHashPassword = password_hash($finalPlainPassword, PASSWORD_BCRYPT);
 
-            $upd = $pdo->prepare("UPDATE admins SET username = ?, nama = ?, password = ?, password_plain = ? WHERE id = ?");
-            $upd->execute([$newUsername, $newNama, $finalHashPassword, $finalPlainPassword, $admin['id']]);
+            $upd = $pdo->prepare("UPDATE admins SET username = ?, nama = ?, password = ? WHERE id = ?");
+            $upd->execute([$newUsername, $newNama, $finalHashPassword, $admin['id']]);
+            // Bersihkan kolom legacy password_plain jika masih ada di skema DB lama
+            try {
+                $clr = $pdo->prepare("UPDATE admins SET password_plain = NULL WHERE id = ?");
+                $clr->execute([$admin['id']]);
+            } catch (Throwable $ignore) {}
+
+            // Cabut token lama agar sesi lama tidak bisa dipakai ulang setelah kredensial diubah
+            $oldJwt = getCurrentJwtToken();
+            if ($oldJwt) {
+                revokeJwtToken($oldJwt);
+            }
 
             $updatedAdmin = [
                 "id" => (int)$admin['id'],
                 "username" => $newUsername,
                 "nama" => $newNama,
                 "role" => $admin['role'],
-                "passwordPlain" => $finalPlainPassword,
                 "createdAt" => $admin['created_at'] ?? null,
             ];
 
@@ -286,13 +296,6 @@ try {
     // 2. PROFIL DESA
     // ----------------------------------------------------
     if ($resource === "profil") {
-        try {
-            $pdo->exec("ALTER TABLE profil_desa ADD COLUMN foto_hero LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE profil_desa ADD COLUMN foto_unit_wisata LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-
         if ($method === "GET") {
             $stmt = $pdo->query("SELECT * FROM profil_desa WHERE id = 1");
             $row = $stmt->fetch();
@@ -360,15 +363,23 @@ try {
             $jam = isset($body['jamPelayanan']) ? $body['jamPelayanan'] : ($existingRow['jam_pelayanan'] ?? '');
             $telp = isset($body['noTelepon']) ? $body['noTelepon'] : ($existingRow['no_telepon'] ?? '');
             $email = isset($body['emailDesa']) ? $body['emailDesa'] : ($existingRow['email_desa'] ?? '');
-            $fotoHero = array_key_exists('fotoHero', $body)
-                ? (trim((string)$body['fotoHero']) !== '' ? trim((string)$body['fotoHero']) : null)
-                : ($existingRow['foto_hero'] ?? null);
+            $fotoHero = null;
 
             $fotoUnitWisataJson = $existingRow['foto_unit_wisata'] ?? '{}';
             if (array_key_exists('fotoUnitWisata', $body)) {
-                $fotoUnitWisataJson = is_array($body['fotoUnitWisata'])
-                    ? json_encode($body['fotoUnitWisata'])
-                    : (is_string($body['fotoUnitWisata']) ? $body['fotoUnitWisata'] : '{}');
+                $rawMap = is_array($body['fotoUnitWisata'])
+                    ? $body['fotoUnitWisata']
+                    : (is_string($body['fotoUnitWisata']) ? (json_decode($body['fotoUnitWisata'], true) ?: []) : []);
+                $cleanMap = [];
+                foreach ($rawMap as $k => $v) {
+                    if (preg_match('/^(unit_[1-6]|wisata_[1-3])$/', (string)$k)) {
+                        $cleanVal = $sanitizeImageValue($v);
+                        if ($cleanVal !== null) {
+                            $cleanMap[$k] = $cleanVal;
+                        }
+                    }
+                }
+                $fotoUnitWisataJson = json_encode($cleanMap);
             }
 
             $stmt = $pdo->prepare("
@@ -456,13 +467,6 @@ try {
     // 4. BERITA
     // ----------------------------------------------------
     if ($resource === "berita") {
-        try {
-            $pdo->exec("ALTER TABLE berita ADD COLUMN gambar LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-        try {
-            $pdo->exec("ALTER TABLE berita ADD COLUMN galeri LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-
         $formatTanggalIndoPhp = function () {
             $bulan = [1 => 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
             return date('j') . ' ' . $bulan[(int)date('n')] . ' ' . date('Y');
@@ -490,7 +494,7 @@ try {
             return [$cover, array_slice($list, 0, 8)];
         };
 
-        $normalizeGaleriInput = function ($bodyData) {
+        $normalizeGaleriInput = function ($bodyData) use ($sanitizeImageValue) {
             $hasGaleriKey = array_key_exists('galeri', $bodyData);
             $hasGambarKey = array_key_exists('gambar', $bodyData) || array_key_exists('imageUrl', $bodyData);
             if (!$hasGaleriKey && !$hasGambarKey) {
@@ -499,15 +503,16 @@ try {
             $list = [];
             if ($hasGaleriKey && is_array($bodyData['galeri'])) {
                 foreach ($bodyData['galeri'] as $item) {
-                    if (is_string($item) && trim($item) !== '') {
-                        $list[] = trim($item);
+                    $clean = $sanitizeImageValue($item);
+                    if ($clean !== null) {
+                        $list[] = $clean;
                     }
                 }
             } else {
                 $single = isset($bodyData['gambar'])
-                    ? trim((string)$bodyData['gambar'])
-                    : (isset($bodyData['imageUrl']) ? trim((string)$bodyData['imageUrl']) : '');
-                if ($single !== '') {
+                    ? $sanitizeImageValue($bodyData['gambar'])
+                    : (isset($bodyData['imageUrl']) ? $sanitizeImageValue($bodyData['imageUrl']) : null);
+                if ($single !== null) {
                     $list[] = $single;
                 }
             }
@@ -518,7 +523,8 @@ try {
         };
 
         if ($method === "GET" && !$subResource) {
-            $stmt = $pdo->query("SELECT * FROM berita ORDER BY id DESC");
+            // Daftar berita hanya mengirim 1 foto sampul + jumlahFoto agar loading Beranda di HP super cepat
+            $stmt = $pdo->query("SELECT id, judul, kategori, tanggal, ringkasan, isi, gambar, galeri, created_at FROM berita ORDER BY id DESC");
             $rows = $stmt->fetchAll();
             $data = array_map(function($r) use ($extractGaleriRow) {
                 list($cover, $galeriList) = $extractGaleriRow($r);
@@ -530,7 +536,6 @@ try {
                     "ringkasan" => $r['ringkasan'],
                     "isi" => $r['isi'] ?: $r['ringkasan'],
                     "gambar" => $cover,
-                    "galeri" => $galeriList,
                     "jumlahFoto" => count($galeriList),
                     "createdAt" => $r['created_at'] ?? null,
                 ];
@@ -652,10 +657,6 @@ try {
     // 5. UMKM
     // ----------------------------------------------------
     if ($resource === "umkm") {
-        try {
-            $pdo->exec("ALTER TABLE umkm ADD COLUMN gambar LONGTEXT DEFAULT NULL");
-        } catch (Throwable $ignore) {}
-
         if ($method === "GET") {
             $stmt = $pdo->query("SELECT * FROM umkm ORDER BY id DESC");
             $rows = $stmt->fetchAll();
@@ -682,7 +683,7 @@ try {
             $harga = isset($body['harga']) ? trim($body['harga']) : '';
             $kontakWa = isset($body['kontakWa']) ? preg_replace('/[^0-9]/', '', $body['kontakWa']) : '6281234567890';
             $deskripsi = isset($body['deskripsi']) ? trim($body['deskripsi']) : '';
-            $gambar = isset($body['gambar']) ? trim($body['gambar']) : (isset($body['imageUrl']) ? trim($body['imageUrl']) : null);
+            $gambar = isset($body['gambar']) ? $sanitizeImageValue($body['gambar']) : (isset($body['imageUrl']) ? $sanitizeImageValue($body['imageUrl']) : null);
 
             $stmt = $pdo->prepare("INSERT INTO umkm (nama, kategori, harga, kontak_wa, deskripsi, gambar) VALUES (?, ?, ?, ?, ?, ?)");
             $stmt->execute([$nama, $kategori, $harga, $kontakWa, $deskripsi, $gambar]);
@@ -710,7 +711,7 @@ try {
             $kontakWa = isset($body['kontakWa']) ? preg_replace('/[^0-9]/', '', $body['kontakWa']) : '';
             $deskripsi = isset($body['deskripsi']) ? trim($body['deskripsi']) : '';
             $hasGambarKey = array_key_exists('gambar', $body) || array_key_exists('imageUrl', $body);
-            $gambar = isset($body['gambar']) ? trim((string)$body['gambar']) : (isset($body['imageUrl']) ? trim((string)$body['imageUrl']) : '');
+            $gambar = isset($body['gambar']) ? $sanitizeImageValue($body['gambar']) : (isset($body['imageUrl']) ? $sanitizeImageValue($body['imageUrl']) : null);
 
             if ($hasGambarKey) {
                 $stmt = $pdo->prepare("
@@ -723,7 +724,7 @@ try {
                         gambar = ?
                     WHERE id = ?
                 ");
-                $stmt->execute([$nama, $kategori, $harga, $kontakWa, $deskripsi, $gambar !== '' ? $gambar : null, $id]);
+                $stmt->execute([$nama, $kategori, $harga, $kontakWa, $deskripsi, $gambar, $id]);
             } else {
                 $stmt = $pdo->prepare("
                     UPDATE umkm SET 
@@ -844,7 +845,7 @@ try {
             $jabatan = isset($body['jabatan']) ? trim($body['jabatan']) : '';
             $nama = isset($body['nama']) ? trim($body['nama']) : '';
             $urutan = isset($body['urutan']) && $body['urutan'] !== '' ? (int)$body['urutan'] : 0;
-            $foto = isset($body['foto']) && trim((string)$body['foto']) !== '' ? trim((string)$body['foto']) : null;
+            $foto = isset($body['foto']) ? $sanitizeImageValue($body['foto']) : null;
 
             if (!$jabatan || !$nama) {
                 http_response_code(400);
@@ -883,7 +884,7 @@ try {
             $nama = isset($body['nama']) && trim($body['nama']) !== '' ? trim($body['nama']) : $row['nama'];
             $urutan = isset($body['urutan']) && $body['urutan'] !== '' ? (int)$body['urutan'] : (int)$row['urutan'];
             $foto = array_key_exists('foto', $body)
-                ? (trim((string)$body['foto']) !== '' ? trim((string)$body['foto']) : null)
+                ? $sanitizeImageValue($body['foto'])
                 : $row['foto'];
 
             $stmt = $pdo->prepare("UPDATE perangkat_desa SET jabatan = ?, nama = ?, foto = ?, urutan = ? WHERE id = ?");
@@ -981,10 +982,6 @@ try {
     // 9. PESANAN PRODUK & BOOKING WISATA / LAYANAN
     // ----------------------------------------------------
     if ($resource === "pesanan") {
-        if (function_exists('ensurePesananTable')) {
-            ensurePesananTable($pdo);
-        }
-
         // Endpoint publik khusus Kalender Ketersediaan (tanpa data pribadi pemesan)
         if ($method === "GET" && $subResource === "jadwal") {
             $stmt = $pdo->query("SELECT id, jenis, nama_item, kategori_item, jumlah, tanggal_booking, status FROM pesanan WHERE jenis IN ('Booking Wisata', 'Booking Layanan Unit') AND COALESCE(status, 'Baru') != 'Dibatalkan' AND tanggal_booking IS NOT NULL AND TRIM(tanggal_booking) != '' ORDER BY tanggal_booking ASC, id DESC");

@@ -166,7 +166,7 @@ function getDb() {
 
 function ensureTablesExist($pdo) {
     global $DB_HOST, $DB_NAME;
-    $lockFile = rtrim(sys_get_temp_dir(), '/\\') . '/bumdes_schema_v3_' . md5(($DB_HOST ?? '') . '|' . ($DB_NAME ?? '')) . '.ok';
+    $lockFile = rtrim(sys_get_temp_dir(), '/\\') . '/bumdes_schema_v4_' . md5(($DB_HOST ?? '') . '|' . ($DB_NAME ?? '')) . '.ok';
     if (@is_file($lockFile)) {
         return;
     }
@@ -181,7 +181,7 @@ function ensureTablesExist($pdo) {
 
         // Pastikan kolom tambahan tersedia dan bertipe LONGTEXT tanpa menimpa data yang sudah diedit Admin
         $schemaStatements = [
-            "ALTER TABLE admins ADD COLUMN password_plain VARCHAR(255) DEFAULT 'admin123'",
+            "UPDATE admins SET password_plain = NULL WHERE password_plain IS NOT NULL",
             "ALTER TABLE umkm ADD COLUMN gambar LONGTEXT DEFAULT NULL",
             "ALTER TABLE umkm MODIFY COLUMN gambar LONGTEXT DEFAULT NULL",
             "ALTER TABLE berita ADD COLUMN gambar LONGTEXT DEFAULT NULL",
@@ -242,20 +242,19 @@ function ensurePesananTable($pdo) {
 }
 
 function initDatabase($pdo) {
-    // 1. Admins
+    // 1. Admins (password hanya disimpan dalam bentuk hash bcrypt, tidak pernah plaintext)
     $pdo->exec("CREATE TABLE IF NOT EXISTS admins (
         id INT AUTO_INCREMENT PRIMARY KEY,
         username VARCHAR(50) NOT NULL UNIQUE,
         password VARCHAR(255) NOT NULL,
-        password_plain VARCHAR(255) DEFAULT 'admin123',
         nama VARCHAR(100) NOT NULL,
         role VARCHAR(20) DEFAULT 'SUPERADMIN',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
-    // Seed admin default: admin / admin123
+    // Seed admin default hanya jika tabel benar-benar kosong: admin / admin123 (wajib ganti setelah login)
     $passHash = password_hash('admin123', PASSWORD_BCRYPT);
-    $stmt = $pdo->prepare("INSERT IGNORE INTO admins (id, username, password, password_plain, nama, role) VALUES (1, 'admin', ?, 'admin123', 'Admin BUMDes Sedya Makmur', 'SUPERADMIN')");
+    $stmt = $pdo->prepare("INSERT IGNORE INTO admins (id, username, password, nama, role) VALUES (1, 'admin', ?, 'Admin BUMDes Sedya Makmur', 'SUPERADMIN')");
     $stmt->execute([$passHash]);
 
     // 2. Profil Desa / BUMDes
